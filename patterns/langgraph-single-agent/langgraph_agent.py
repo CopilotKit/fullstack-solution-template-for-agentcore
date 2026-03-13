@@ -16,7 +16,6 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from copilotkit import CopilotKitMiddleware, LangGraphAGUIAgent
 from langchain.agents import create_agent
 from langchain_aws import ChatBedrock
-from langchain_core.messages import AIMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph_checkpoint_aws import AgentCoreMemorySaver
 
@@ -153,107 +152,7 @@ async def create_runtime_graph():
     return await create_langgraph_agent(tools)
 
 
-def _reconstruct_tool_calls(msg: AIMessage) -> list:
-    """Reconstruct tool_calls from tool_use content blocks.
-
-    AgentCoreMemorySaver.clean_orphan_tool_calls strips tool_calls from AIMessages
-    that have no matching ToolMessage (frontend tool calls resolved by the UI).
-    The tool_use content blocks are preserved. We rebuild tool_calls from them.
-    """
-    tool_calls = []
-    for block in msg.content:
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
-            continue
-        inp = block.get("input", {})
-        if isinstance(inp, str):
-            try:
-                inp = json.loads(inp) if inp else {}
-            except Exception:
-                inp = {}
-        tool_calls.append({
-            "id": str(block.get("id", "")),
-            "name": str(block.get("name", "")),
-            "args": inp,
-            "type": "tool_call",
-        })
-    return tool_calls
-
-
 class ActorAwareLangGraphAgent(LangGraphAGUIAgent):
-    def _filter_orphan_tool_messages(self, messages: list) -> list:
-        """Restore tool_calls stripped by clean_orphan_tool_calls for MESSAGES_SNAPSHOT.
-
-        Without tool_calls, MESSAGES_SNAPSHOT omits toolCalls for frontend tool calls.
-        The CopilotKit client then overwrites message state from the snapshot, removing
-        the rendered component (e.g. pie chart). Restoring tool_calls here ensures the
-        snapshot includes them so the UI component persists and CopilotKitRunner.connect()
-        can replay TOOL_CALL_RESULT events on reconnect.
-        """
-        messages = super()._filter_orphan_tool_messages(messages)
-        result = []
-        for msg in messages:
-            if isinstance(msg, AIMessage) and isinstance(msg.content, list) and not msg.tool_calls:
-                tool_calls = _reconstruct_tool_calls(msg)
-                if tool_calls:
-                    msg = AIMessage(content=msg.content, tool_calls=tool_calls, id=msg.id)
-            result.append(msg)
-        return result
-
-    def langgraph_default_merge_state(self, state, messages, input):
-        result = super().langgraph_default_merge_state(state, messages, input)
-        # clean_orphan_tool_calls strips tool_calls from AIMessages with no ToolMessage
-        # in the checkpoint. When Run 2 (triggered by CopilotKit after a frontend tool
-        # call) adds the ToolMessage, the AIMessage still has tool_calls=[].
-        # _fix_messages_for_bedrock then strips the tool_use content block → orphan
-        # ToolMessage → Bedrock error. Fix: prepend repaired AIMessages to result so
-        # add_messages replaces them by ID before the LLM is re-invoked.
-        existing = state.get("messages", []) if state else []
-        repairs = [
-            AIMessage(content=msg.content, tool_calls=_reconstruct_tool_calls(msg), id=msg.id)
-            for msg in existing
-            if isinstance(msg, AIMessage)
-            and isinstance(msg.content, list)
-            and not msg.tool_calls
-            and _reconstruct_tool_calls(msg)
-        ]
-        if repairs:
-            result["messages"] = repairs + list(result.get("messages", []))
-        return result
-
-    async def get_checkpoint_before_message(self, message_id: str, thread_id: str):
-        """Override to inject actor_id required by AgentCoreMemorySaver."""
-        if not thread_id:
-            raise ValueError("Missing thread_id in config")
-
-        actor_id = (
-            self.config.get("configurable", {}).get("actor_id") if self.config else None
-        )
-        config: dict = {"configurable": {"thread_id": thread_id}}
-        if actor_id:
-            config["configurable"]["actor_id"] = actor_id
-
-        history_list = []
-        async for snapshot in self.graph.aget_state_history(config):
-            history_list.append(snapshot)
-
-        history_list.reverse()
-        for idx, snapshot in enumerate(history_list):
-            messages = snapshot.values.get("messages", [])
-            if any(getattr(m, "id", None) == message_id for m in messages):
-                if idx == 0:
-                    empty_snapshot = snapshot
-                    empty_snapshot.values["messages"] = []
-                    return empty_snapshot
-
-                snapshot_values_without_messages = snapshot.values.copy()
-                del snapshot_values_without_messages["messages"]
-                checkpoint = history_list[idx - 1]
-                merged_values = {**checkpoint.values, **snapshot_values_without_messages}
-                checkpoint = checkpoint._replace(values=merged_values)
-                return checkpoint
-
-        raise ValueError("Message ID not found in history")
-
     async def run(self, input: RunAgentInput):
         actor_id = (
             self.config.get("configurable", {}).get("actor_id") if self.config else None
