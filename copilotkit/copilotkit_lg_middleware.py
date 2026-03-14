@@ -15,6 +15,7 @@ Example:
 """
 
 import json
+import re
 from typing import Any, Callable, Awaitable, ClassVar, List
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
@@ -65,13 +66,58 @@ class CopilotKitMiddleware(AgentMiddleware[StateSchema, Any]):
     def _fix_messages_for_bedrock(messages: list) -> list:
         """Fix messages loaded from checkpoint before sending to Bedrock.
 
-        Handles three issues caused by CopilotKit's after_agent restoring
+        Handles four issues caused by CopilotKit's after_agent restoring
         frontend tool_calls to the checkpoint:
         1. Strip unanswered tool_calls (no matching ToolMessage) — Bedrock
            rejects toolUse without a corresponding toolResult.
         2. Sync msg.content tool_use blocks with msg.tool_calls.
         3. Fix tool_use content blocks with string input (must be dict).
+        4. Deduplicate ToolMessages by tool_call_id — patch_orphan_tool_calls
+           injects a placeholder with a new random ID on every checkpoint load;
+           when the real result is later appended alongside it, Bedrock rejects
+           the duplicate toolResult IDs. We keep the real result (non-interrupted)
+           over the placeholder, falling back to the last occurrence if both look
+           real.
         """
+        # 4. Deduplicate ToolMessages by tool_call_id before all other processing.
+        #    patch_orphan_tool_calls adds "…was interrupted before completion."
+        #    placeholders with fresh random IDs on every checkpoint load. The real
+        #    result comes in as a separate message with a different ID, so both end
+        #    up in the list. Keep the real (non-interrupted) one; if multiple real
+        #    ones exist, keep the last.
+        _INTERRUPTED_PAT = re.compile(
+            r"^Tool call '.+' with id '.+' was interrupted before completion\.$"
+        )
+        # Group ToolMessages by tool_call_id, preserving position
+        tc_groups: dict[str, list] = {}
+        for i, msg in enumerate(messages):
+            if isinstance(msg, ToolMessage):
+                tc_id = getattr(msg, 'tool_call_id', None)
+                if tc_id:
+                    tc_groups.setdefault(tc_id, []).append(i)
+
+        drop_indices: set = set()
+        for tc_id, indices in tc_groups.items():
+            if len(indices) <= 1:
+                continue
+            # Separate interrupted placeholders from real results
+            real_indices = [
+                i for i in indices
+                if not (isinstance(messages[i].content, str)
+                        and _INTERRUPTED_PAT.match(messages[i].content))
+            ]
+            interrupted_indices = [i for i in indices if i not in real_indices]
+            if real_indices:
+                # Drop all interrupted placeholders; keep real (last wins if >1)
+                drop_indices.update(interrupted_indices)
+                drop_indices.update(real_indices[:-1])  # keep only last real
+            else:
+                # All interrupted — keep only the last
+                drop_indices.update(interrupted_indices[:-1])
+
+        if drop_indices:
+            messages[:] = [msg for i, msg in enumerate(messages) if i not in drop_indices]
+
         # Collect all tool_call_ids that have a ToolMessage answer
         answered_tc_ids = {
             m.tool_call_id for m in messages
