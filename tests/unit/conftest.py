@@ -19,7 +19,7 @@ def _prioritise_agent_tools():
     re-inserts the agent path at position 0 and evicts any cached entry so
     that all unit tests in this directory pick up the correct package.
     """
-    if _agent_path in sys.path:
+    while _agent_path in sys.path:
         sys.path.remove(_agent_path)
     sys.path.insert(0, _agent_path)
     sys.modules.pop("tools", None)

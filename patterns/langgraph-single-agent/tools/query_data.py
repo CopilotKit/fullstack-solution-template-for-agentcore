@@ -9,8 +9,11 @@ from langchain.tools import tool
 
 # Read at module load time — avoids file I/O on every tool invocation.
 _csv_path = Path(__file__).parent / "db.csv"
-with open(_csv_path) as _f:
-    _cached_data = list(csv.DictReader(_f))
+try:
+    with open(_csv_path) as _f:
+        _cached_data = list(csv.DictReader(_f))
+except (FileNotFoundError, OSError) as e:
+    raise RuntimeError(f"query_data: cannot load sample data from {_csv_path}") from e
 
 
 @tool

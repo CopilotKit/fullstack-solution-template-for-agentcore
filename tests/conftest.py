@@ -21,7 +21,7 @@ def pytest_configure(config):
     sys.path manipulation, then evict any stale 'tools' cache entry so that
     imports resolve to the langgraph agent's tools package rather than the
     top-level tools/ directory in the repo root."""
-    if _agent_path in sys.path:
+    while _agent_path in sys.path:
         sys.path.remove(_agent_path)
     sys.path.insert(0, _agent_path)
     sys.modules.pop("tools", None)
