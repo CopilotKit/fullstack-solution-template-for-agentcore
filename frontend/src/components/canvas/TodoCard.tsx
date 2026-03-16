@@ -37,10 +37,12 @@ export function TodoCard({
   }
 
   const saveEdit = (field: "title" | "description") => {
-    if (editValue.trim()) {
-      if (field === "title") onUpdateTitle(todo.id, editValue.trim())
-      else onUpdateDescription(todo.id, editValue.trim())
+    if (!editValue.trim()) {
+      // Don't save empty value — keep the editor open
+      return
     }
+    if (field === "title") onUpdateTitle(todo.id, editValue.trim())
+    else onUpdateDescription(todo.id, editValue.trim())
     setEditingField(null)
     setEditValue("")
   }

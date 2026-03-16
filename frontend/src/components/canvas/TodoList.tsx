@@ -17,9 +17,7 @@ export function TodoList({ todos, onUpdate, isAgentRunning }: TodoListProps) {
         t.id === todo.id
           ? {
               ...t,
-              status: (t.status === "completed" ? "pending" : "completed") as
-                | "pending"
-                | "completed",
+              status: t.status === "completed" ? "pending" : "completed",
             }
           : t
       )
@@ -53,7 +51,7 @@ export function TodoList({ todos, onUpdate, isAgentRunning }: TodoListProps) {
     onUpdate([...todos, newTodo])
   }
 
-  if (!todos || todos.length === 0) {
+  if (todos.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4">
         <div className="text-5xl">✏️</div>
