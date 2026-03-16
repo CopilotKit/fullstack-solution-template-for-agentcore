@@ -20,12 +20,16 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph_checkpoint_aws import AgentCoreMemorySaver
 
 from utils.ssm import get_ssm_parameter
+from tools import query_data, AgentState, todo_tools
 
 app = BedrockAgentCoreApp()
 
 ACTOR_ID_KEYS = ("actor_id", "actorId", "user_id", "userId", "sub")
 
-SYSTEM_PROMPT = """You are a helpful assistant with access to tools via the Gateway.
+SYSTEM_PROMPT = """You are a helpful assistant with access to tools via the Gateway and built-in data tools.
+
+When demonstrating charts, always call the query_data tool first to fetch data from the database before calling any chart tool.
+When managing todos, use manage_todos to update the list and get_todos to read the current list.
 When asked about your tools, list them and explain what they do."""
 
 
@@ -134,10 +138,11 @@ async def create_langgraph_agent(tools: list):
     try:
         return create_agent(
             model=_build_model(streaming=True),
-            tools=tools,
+            tools=[*tools, query_data, *todo_tools],  # MCP tools + data + todo tools
             checkpointer=_build_checkpointer(),
             middleware=[CopilotKitMiddleware()],
             system_prompt=SYSTEM_PROMPT,
+            state_schema=AgentState,  # extends BaseAgentState with todos: list[Todo]
         )
     except Exception as error:
         print(f"[AGENT ERROR] Error creating LangGraph agent: {error}")
