@@ -37,6 +37,7 @@ COPY copilotkit/ copilotkit/
 
 # Copy agent code
 COPY patterns/langgraph-single-agent/langgraph_agent.py .
+COPY patterns/langgraph-single-agent/tools/ tools/
 COPY patterns/utils/ utils/
 
 # Healthcheck using Python (no extra dependencies needed)
