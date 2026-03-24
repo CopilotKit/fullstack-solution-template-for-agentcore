@@ -1,6 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import "@copilotkit/react-core/v2/styles.css"
 import { useEffect, useState } from "react"
 import { CopilotKitProvider } from "@copilotkit/react-core/v2"
 import { useAuth as useOidcAuth } from "react-oidc-context"
