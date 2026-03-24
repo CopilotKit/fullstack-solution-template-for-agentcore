@@ -179,25 +179,6 @@ if AGUI_ENABLED:
             system_prompt=system_prompt,
         )
 
-    class _ActorAwareLangGraphAgent(LangGraphAGUIAgent):
-        """Defers graph creation to request time so each call gets fresh MCP tools."""
-        async def run(self, input: RunAgentInput):
-            actor_id = (
-                self.config.get("configurable", {}).get("actor_id") if self.config else None
-            )
-            if not actor_id:
-                raise ValueError(
-                    "Missing actor identity. Provide forwardedProps.actor_id/user_id "
-                    "or include sub claim in the bearer token."
-                )
-
-            mcp_client = await create_gateway_mcp_client()
-            tools = await mcp_client.get_tools()
-            self.graph = await _create_copilotkit_agent(tools)
-            self.config = {"configurable": {"actor_id": actor_id}}
-            async for event in super().run(input):
-                yield event
-
 
 def _is_agui_request(payload: dict) -> bool:
     """Detect whether the incoming payload is an AG-UI RunAgentInput."""
@@ -231,12 +212,7 @@ async def agent_stream(payload, context: RequestContext):
         # Resolve actor from JWT sub claim
         user_id = extract_user_id_from_context(context)
 
-        request_agent = _ActorAwareLangGraphAgent(
-            name="LangGraphSingleAgent",
-            description="LangGraph single agent exposed via AG-UI",
-            graph=None,
-            config={"configurable": {"actor_id": user_id}},
-        )
+
 
         try:
             async for event in request_agent.run(input_data):
