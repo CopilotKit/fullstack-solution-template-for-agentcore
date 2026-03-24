@@ -177,10 +177,6 @@ async def agent_stream(payload, context: RequestContext):
     # --- CopilotKit / AG-UI path ---
     if AGUI_ENABLED and _is_agui_request(payload):
         input_data = RunAgentInput.model_validate(payload)
-        authorization_header = (
-            context.request_headers.get("Authorization")
-            if context.request_headers else None
-        )
 
         # Resolve actor from JWT sub claim
         user_id = extract_user_id_from_context(context)
