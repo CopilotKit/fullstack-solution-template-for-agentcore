@@ -6,7 +6,6 @@ import { useEffect, useState } from "react"
 import { CopilotKitProvider } from "@copilotkit/react-core/v2"
 import { useAuth as useOidcAuth } from "react-oidc-context"
 import { loadAwsConfig, type AwsExportsConfig } from "@/lib/runtime-config"
-import { ThemeProvider } from "./examples/hooks/useExampleTheme"
 import { CopilotKitChat } from "./CopilotKitChat"
 
 export default function CopilotChatInterface() {
@@ -59,15 +58,13 @@ export default function CopilotChatInterface() {
   const accessToken = auth.user?.access_token ?? auth.user?.id_token
 
   return (
-    <ThemeProvider>
-      <div className="h-full bg-[#f5f7fb]">
-        <CopilotKitProvider
-          runtimeUrl={config.copilotKitRuntimeUrl}
-          headers={accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined}
-        >
-          <CopilotKitChat />
-        </CopilotKitProvider>
-      </div>
-    </ThemeProvider>
+    <div className="h-full bg-[#f5f7fb]">
+      <CopilotKitProvider
+        runtimeUrl={config.copilotKitRuntimeUrl}
+        headers={accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined}
+      >
+        <CopilotKitChat />
+      </CopilotKitProvider>
+    </div>
   )
 }
