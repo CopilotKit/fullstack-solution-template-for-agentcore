@@ -30,13 +30,13 @@ app = BedrockAgentCoreApp()
 async def _fetch_gateway_token(access_token: str) -> str:
     """
     Fetch fresh OAuth2 token for AgentCore Gateway authentication.
-    
+
     This is async because it's called with 'await' in create_gateway_mcp_client().
     The @requires_access_token decorator handles token retrieval and refresh:
     1. Token Retrieval: Calls GetResourceOauth2Token API to fetch token from Token Vault
     2. Automatic Refresh: Uses refresh tokens to renew expired access tokens
     3. Error Orchestration: Handles missing tokens and OAuth flow management
-    
+
     For M2M (Machine-to-Machine) flows, the decorator uses Client Credentials grant type.
     The provider_name must match the Name field in the CDK OAuth2CredentialProvider resource.
     """
@@ -50,7 +50,7 @@ async def create_gateway_mcp_client() -> MultiServerMCPClient:
     MCP (Model Context Protocol) is how agents communicate with tool providers.
     This creates a client that can talk to the AgentCore Gateway using OAuth2
     authentication. The Gateway then provides access to Lambda-based tools.
-    
+
     This implementation avoids the "closure trap" by calling _fetch_gateway_token()
     on every invocation of create_gateway_mcp_client(). Since this function is called
     per-request in agent_stream(), it ensures fresh tokens for each request.
@@ -58,20 +58,20 @@ async def create_gateway_mcp_client() -> MultiServerMCPClient:
     stack_name = os.environ.get('STACK_NAME')
     if not stack_name:
         raise ValueError("STACK_NAME environment variable is required")
-    
+
     # Validate stack name format to prevent injection
     if not stack_name.replace('-', '').replace('_', '').isalnum():
         raise ValueError("Invalid STACK_NAME format")
-    
+
     print(f"[AGENT] Creating Gateway MCP client for stack: {stack_name}")
-    
+
     # Fetch Gateway URL from SSM
     gateway_url = get_ssm_parameter(f'/{stack_name}/gateway_url')
     print(f"[AGENT] Gateway URL from SSM: {gateway_url}")
-    
+
     # Fetch fresh token on every call to avoid closure trap
     fresh_token = await _fetch_gateway_token()
-    
+
     # Create MCP client with Bearer token authentication
     gateway_client = MultiServerMCPClient({
         "gateway": {
@@ -82,7 +82,7 @@ async def create_gateway_mcp_client() -> MultiServerMCPClient:
             }
         }
     })
-    
+
     print("[AGENT] Gateway MCP client created successfully")
     return gateway_client
 
@@ -90,7 +90,7 @@ async def create_gateway_mcp_client() -> MultiServerMCPClient:
 async def create_langgraph_agent(user_id: str, session_id: str, tools: list):
     """
     Create a LangGraph agent with AgentCore Gateway MCP tools and memory integration.
-    
+
     This function sets up a LangGraph StateGraph that can access tools through
     the AgentCore Gateway and maintains conversation memory.
     """
@@ -108,7 +108,7 @@ async def create_langgraph_agent(user_id: str, session_id: str, tools: list):
     memory_id = os.environ.get("MEMORY_ID")
     if not memory_id:
         raise ValueError("MEMORY_ID environment variable is required")
-    
+
     # Configure AgentCore Memory using official LangGraph AWS integration
     checkpointer = AgentCoreMemorySaver(
         memory_id=memory_id,
@@ -117,17 +117,17 @@ async def create_langgraph_agent(user_id: str, session_id: str, tools: list):
 
     try:
         print("[AGENT] Creating LangGraph agent with Gateway tools...")
-        
+
         graph = create_react_agent(
             model=bedrock_model,
             tools=tools,
             checkpointer=checkpointer,
             prompt=system_prompt
         )
-        
+
         print("[AGENT] Agent created successfully with Gateway tools")
         return graph
-        
+
     except Exception as e:
         print(f"[AGENT ERROR] Error creating LangGraph agent: {e}")
         print(f"[AGENT ERROR] Exception type: {type(e).__name__}")
