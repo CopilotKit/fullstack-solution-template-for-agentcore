@@ -136,28 +136,131 @@ async def create_langgraph_agent(user_id: str, session_id: str, tools: list):
         raise
 
 
+# ---------------------------------------------------------------------------
+# CopilotKit / AG-UI integration (opt-in via COPILOTKIT_ENABLED env var)
+# ---------------------------------------------------------------------------
+# When enabled, the agent additionally handles AG-UI protocol requests sent by
+# the CopilotKit runtime Lambda.  The original streaming path above is kept
+# unchanged for the default frontend.
+# ---------------------------------------------------------------------------
+COPILOTKIT_ENABLED = os.environ.get("COPILOTKIT_ENABLED", "").lower() == "true"
+
+if COPILOTKIT_ENABLED:
+    import logging
+    from ag_ui.core import RunAgentInput, RunErrorEvent
+    from copilotkit import CopilotKitMiddleware, LangGraphAGUIAgent
+    from langchain.agents import create_agent
+
+    async def _create_copilotkit_agent(tools: list):
+        """Create a LangGraph agent with CopilotKit middleware for AG-UI support."""
+        system_prompt = """You are a helpful assistant with access to tools via the Gateway.
+        When asked about your tools, list them and explain what they do."""
+
+        bedrock_model = ChatBedrock(
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            temperature=0.1,
+            streaming=True
+        )
+
+        memory_id = os.environ.get("MEMORY_ID")
+        if not memory_id:
+            raise ValueError("MEMORY_ID environment variable is required")
+
+        checkpointer = AgentCoreMemorySaver(
+            memory_id=memory_id,
+            region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        )
+
+        return create_agent(
+            model=bedrock_model,
+            tools=tools,
+            checkpointer=checkpointer,
+            middleware=[CopilotKitMiddleware()],
+            system_prompt=system_prompt,
+        )
+
+    class _ActorAwareLangGraphAgent(LangGraphAGUIAgent):
+        """Defers graph creation to request time so each call gets fresh MCP tools."""
+        async def run(self, input: RunAgentInput):
+            actor_id = (
+                self.config.get("configurable", {}).get("actor_id") if self.config else None
+            )
+            if not actor_id:
+                raise ValueError(
+                    "Missing actor identity. Provide forwardedProps.actor_id/user_id "
+                    "or include sub claim in the bearer token."
+                )
+
+            mcp_client = await create_gateway_mcp_client()
+            tools = await mcp_client.get_tools()
+            self.graph = await _create_copilotkit_agent(tools)
+            self.config = {"configurable": {"actor_id": actor_id}}
+            async for event in super().run(input):
+                yield event
+
+
+def _is_agui_request(payload: dict) -> bool:
+    """Detect whether the incoming payload is an AG-UI RunAgentInput."""
+    return "thread_id" in payload and "run_id" in payload
+
+
 @app.entrypoint
 async def agent_stream(payload, context: RequestContext):
     """
     Main entrypoint for the LangGraph agent using streaming with Gateway integration.
-    
+
     This is the function that AgentCore Runtime calls when the agent receives a request.
     It extracts the user's query from the payload, securely obtains the user ID from
     the validated JWT token in the request context, creates a LangGraph agent with Gateway
     tools and memory, and streams the response back. This function handles the complete
-    request lifecycle with token-level streaming. The user ID is extracted from the 
+    request lifecycle with token-level streaming. The user ID is extracted from the
     JWT token (via RequestContext).
+
+    When COPILOTKIT_ENABLED is set, AG-UI protocol requests (from the CopilotKit
+    runtime Lambda) are detected and handled via LangGraphAGUIAgent instead.
     """
+
+    # --- CopilotKit / AG-UI path ---
+    if COPILOTKIT_ENABLED and _is_agui_request(payload):
+        input_data = RunAgentInput.model_validate(payload)
+        authorization_header = (
+            context.request_headers.get("Authorization")
+            if context.request_headers else None
+        )
+
+        # Resolve actor from JWT sub claim
+        user_id = extract_user_id_from_context(context)
+
+        request_agent = _ActorAwareLangGraphAgent(
+            name="LangGraphSingleAgent",
+            description="LangGraph single agent exposed via AG-UI",
+            graph=None,
+            config={"configurable": {"actor_id": user_id}},
+        )
+
+        try:
+            async for event in request_agent.run(input_data):
+                if event is not None:
+                    yield event.model_dump(mode="json", by_alias=True, exclude_none=True)
+        except Exception as exc:
+            logging.exception("Agent run failed")
+            yield RunErrorEvent(
+                message=str(exc) or type(exc).__name__,
+                code=type(exc).__name__,
+            ).model_dump(mode="json", by_alias=True, exclude_none=True)
+        return
+
+    # --- Original streaming path ---
     user_query = payload.get("prompt")
     session_id = payload.get("runtimeSessionId")
-    
+
     if not all([user_query, session_id]):
         yield {
             "status": "error",
             "error": "Missing required fields: prompt or runtimeSessionId"
         }
         return
-    
+
     try:
         # Extract user ID securely from the validated JWT token
         # instead of trusting the payload body (which could be manipulated)
@@ -165,20 +268,20 @@ async def agent_stream(payload, context: RequestContext):
 
         print(f"[STREAM] Starting streaming invocation for user: {user_id}, session: {session_id}")
         print(f"[STREAM] Query: {user_query}")
-        
+
         # Get OAuth2 access token and create Gateway MCP client
         # The @requires_access_token decorator handles token fetching automatically
         print("[STREAM] Creating Gateway MCP client (decorator handles OAuth2)...")
         mcp_client = await create_gateway_mcp_client()
         print("[STREAM] Gateway MCP client created successfully")
-        
+
         print("[STREAM] Loading Gateway tools...")
         tools = await mcp_client.get_tools()
         print(f"[STREAM] Loaded {len(tools)} tools from Gateway")
-        
+
         # Create agent with the loaded tools
         graph = await create_langgraph_agent(user_id, session_id, tools)
-        
+
         # Configure streaming with actor_id and thread_id for memory
         config = {
             "configurable": {
@@ -186,7 +289,7 @@ async def agent_stream(payload, context: RequestContext):
                 "actor_id": user_id
             }
         }
-        
+
         # Stream messages using LangGraph's astream with stream_mode="messages"
         async for event in graph.astream(
             {"messages": [("user", user_query)]},
@@ -196,9 +299,9 @@ async def agent_stream(payload, context: RequestContext):
             # event is a tuple: (message_chunk, metadata)
             message_chunk, metadata = event
             yield message_chunk.model_dump()
-        
+
         print("[STREAM] Streaming completed successfully")
-            
+
     except Exception as e:
         error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
         print(f"[STREAM ERROR] Error in agent_stream: {error_msg}")
