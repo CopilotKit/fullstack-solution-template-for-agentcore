@@ -86,6 +86,20 @@ def create_gateway_mcp_client() -> MCPClient:
     print("[AGENT] Gateway MCP client created successfully")
     return gateway_client
 
+# ---------------------------------------------------------------------------
+# CopilotKit / AG-UI integration (opt-in via AGUI_ENABLED env var)
+# ---------------------------------------------------------------------------
+# When enabled, the agent additionally handles AG-UI protocol requests sent by
+# the CopilotKit runtime Lambda.  The original streaming path above is kept
+# unchanged for the default frontend.
+# ---------------------------------------------------------------------------
+AGUI_ENABLED = os.environ.get("AGUI_ENABLED", "").lower() == "true"
+
+if AGUI_ENABLED:
+    import logging
+    from ag_ui.core import RunAgentInput, RunErrorEvent
+    from copilotkit import CopilotKitMiddleware, LangGraphAGUIAgent
+    from langchain.agents import create_agent
 
 def create_basic_agent(user_id: str, session_id: str) -> Agent:
     """
@@ -195,9 +209,32 @@ async def agent_stream(payload, context: RequestContext):
 
         agent = create_basic_agent(user_id, session_id)
 
-        # Use the agent's stream_async method for true token-level streaming
-        async for event in agent.stream_async(user_query):
-            yield json.loads(json.dumps(dict(event), default=str))
+        if AGUI_ENABLED and _is_agui_request(payload):
+            strands_agent = StrandsAgent(
+                agent=agent,
+                name="FASTAgent",
+                description="FAST Strands agent with AG-UI support",
+            )
+            # Pre-seed the per-thread agent cache so StrandsAgent.run() uses our
+            # core_agent (which has AgentCoreMemorySessionManager) rather than
+            # creating a new instance without it.
+            strands_agent._agents_by_thread[session_id] = agent
+
+            try:
+                async for event in strands_agent.run(user_query):
+                    if event is not None:
+                        yield event.model_dump(mode="json", by_alias=True, exclude_none=True)
+            except Exception as exc:
+                logging.exception("Agent run failed")
+                yield RunErrorEvent(
+                    message=str(exc) or type(exc).__name__,
+                    code=type(exc).__name__,
+                ).model_dump(mode="json", by_alias=True, exclude_none=True)
+            return
+        else:
+            # Use the agent's stream_async method for true token-level streaming
+            async for event in agent.stream_async(user_query):
+                yield json.loads(json.dumps(dict(event), default=str))
 
     except Exception as e:
         print(f"[STREAM ERROR] Error in agent_stream: {e}")
