@@ -151,33 +151,6 @@ if AGUI_ENABLED:
     from copilotkit import CopilotKitMiddleware, LangGraphAGUIAgent
     from langchain.agents import create_agent
 
-    async def _create_copilotkit_agent(tools: list):
-        """Create a LangGraph agent with CopilotKit middleware for AG-UI support."""
-        system_prompt = """You are a helpful assistant with access to tools via the Gateway.
-        When asked about your tools, list them and explain what they do."""
-
-        bedrock_model = ChatBedrock(
-            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            temperature=0.1,
-            streaming=True
-        )
-
-        memory_id = os.environ.get("MEMORY_ID")
-        if not memory_id:
-            raise ValueError("MEMORY_ID environment variable is required")
-
-        checkpointer = AgentCoreMemorySaver(
-            memory_id=memory_id,
-            region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-        )
-
-        return create_agent(
-            model=bedrock_model,
-            tools=tools,
-            checkpointer=checkpointer,
-            middleware=[CopilotKitMiddleware()],
-            system_prompt=system_prompt,
-        )
 
 
 def _is_agui_request(payload: dict) -> bool:
@@ -211,8 +184,47 @@ async def agent_stream(payload, context: RequestContext):
 
         # Resolve actor from JWT sub claim
         user_id = extract_user_id_from_context(context)
+        if not user_id:
+            raise ValueError(
+                "Missing actor identity. Provide forwardedProps.actor_id/user_id "
+                "or include sub claim in the bearer token."
+            )
 
+        mcp_client = await create_gateway_mcp_client()
+        tools = await mcp_client.get_tools()
 
+        system_prompt = """You are a helpful assistant with access to tools via the Gateway.
+        When asked about your tools, list them and explain what they do."""
+
+        bedrock_model = ChatBedrock(
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            temperature=0.1,
+            streaming=True
+        )
+
+        memory_id = os.environ.get("MEMORY_ID")
+        if not memory_id:
+            raise ValueError("MEMORY_ID environment variable is required")
+
+        checkpointer = AgentCoreMemorySaver(
+            memory_id=memory_id,
+            region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        )
+
+        graph = create_agent(
+            model=bedrock_model,
+            tools=tools,
+            checkpointer=checkpointer,
+            middleware=[CopilotKitMiddleware()],
+            system_prompt=system_prompt,
+        )
+
+        request_agent = LangGraphAGUIAgent(
+            name="LangGraphSingleAgent",
+            description="LangGraph single agent exposed via AG-UI",
+            graph=graph,
+            config={"configurable": {"actor_id": user_id}},
+        )
 
         try:
             async for event in request_agent.run(input_data):
