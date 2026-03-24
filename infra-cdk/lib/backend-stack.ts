@@ -19,6 +19,7 @@ import { AppConfig } from "./utils/config-manager"
 import { AgentCoreRole } from "./utils/agentcore-role"
 import * as path from "path"
 import * as fs from "fs"
+import { execSync } from "child_process"
 
 export interface BackendStackProps extends cdk.NestedStackProps {
   config: AppConfig
@@ -33,6 +34,7 @@ export class BackendStack extends cdk.NestedStack {
   public readonly userPoolClientId: string
   public readonly userPoolDomain: cognito.UserPoolDomain
   public feedbackApiUrl: string
+  public copilotKitRuntimeUrl: string
   public runtimeArn: string
   public memoryArn: string
   private agentName: cdk.CfnParameter
@@ -94,6 +96,9 @@ export class BackendStack extends cdk.NestedStack {
     // Create API Gateway Feedback API resources (example of best-practice API Gateway + Lambda
     // pattern)
     this.createFeedbackApi(props.config, props.frontendUrl, feedbackTable)
+
+    // Optional: CopilotKit runtime API (bridges CopilotKit frontend to AgentCore AG-UI)
+    this.createCopilotKitRuntimeApi(props.config, props.frontendUrl)
   }
 
   private createAgentCoreRuntime(config: AppConfig): void {
@@ -600,6 +605,87 @@ export class BackendStack extends cdk.NestedStack {
       parameterName: `/${config.stack_name_base}/feedback-api-url`,
       stringValue: api.url,
       description: "Feedback API Gateway URL",
+    })
+  }
+
+  private createCopilotKitRuntimeApi(config: AppConfig, frontendUrl: string): void {
+    const encodedRuntimeArn = cdk.Fn.join(
+      "%2F",
+      cdk.Fn.split("/", cdk.Fn.join("%3A", cdk.Fn.split(":", this.runtimeArn)))
+    )
+    const agentCoreAgUiUrl = cdk.Fn.join("", [
+      "https://bedrock-agentcore.",
+      cdk.Stack.of(this).region,
+      ".amazonaws.com/runtimes/",
+      encodedRuntimeArn,
+      "/invocations?qualifier=DEFAULT",
+    ])
+
+    const copilotKitLambda = new lambda.Function(this, "CopilotKitRuntimeLambda", {
+      functionName: `${config.stack_name_base}-copilotkit-runtime`,
+      runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: lambda.Architecture.ARM_64,
+      handler: "dist/index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "copilotkit-runtime"), {
+        assetHashType: cdk.AssetHashType.OUTPUT,
+        bundling: {
+          local: {
+            tryBundle(outputDir: string) {
+              const runtimeDir = path.join(__dirname, "..", "lambdas", "copilotkit-runtime")
+              execSync("npm ci --no-audit --no-fund", { cwd: runtimeDir, stdio: "inherit" })
+              execSync("npm run build", { cwd: runtimeDir, stdio: "inherit" })
+              execSync("npm prune --omit=dev", { cwd: runtimeDir, stdio: "inherit" })
+              execSync(`cp -R dist node_modules package.json package-lock.json ${outputDir}/`, {
+                cwd: runtimeDir,
+                stdio: "inherit",
+              })
+              return true
+            },
+          },
+          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
+          command: [
+            "bash", "-c",
+            "npm ci --no-audit --no-fund && npm run build && npm prune --omit=dev && cp -R dist node_modules package.json package-lock.json /asset-output/",
+          ],
+        },
+      }),
+      environment: {
+        AGENTCORE_AG_UI_URL: agentCoreAgUiUrl,
+      },
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 1024,
+      logGroup: new logs.LogGroup(this, "CopilotKitRuntimeLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-copilotkit-runtime`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    const api = new apigateway.RestApi(this, "CopilotKitRuntimeApi", {
+      restApiName: `${config.stack_name_base}-copilotkit-runtime-api`,
+      description: "CopilotKit runtime API (bridges frontend to AgentCore AG-UI)",
+      defaultCorsPreflightOptions: {
+        allowOrigins: [frontendUrl, "http://localhost:3000"],
+        allowMethods: ["GET", "POST", "OPTIONS"],
+        allowHeaders: ["Content-Type", "Authorization"],
+      },
+      deployOptions: { stageName: "prod" },
+    })
+
+    const integration = new apigateway.LambdaIntegration(copilotKitLambda)
+    const copilotkit = api.root.addResource("copilotkit")
+    copilotkit.addMethod("GET", integration)
+    copilotkit.addMethod("POST", integration)
+    const proxy = copilotkit.addResource("{proxy+}")
+    proxy.addMethod("GET", integration)
+    proxy.addMethod("POST", integration)
+
+    this.copilotKitRuntimeUrl = api.urlForPath("/copilotkit")
+
+    new ssm.StringParameter(this, "CopilotKitRuntimeUrlParam", {
+      parameterName: `/${config.stack_name_base}/copilotkit-runtime-url`,
+      stringValue: this.copilotKitRuntimeUrl,
+      description: "CopilotKit runtime API URL",
     })
   }
 
