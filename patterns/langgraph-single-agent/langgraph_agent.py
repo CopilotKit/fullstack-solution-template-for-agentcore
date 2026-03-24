@@ -137,15 +137,15 @@ async def create_langgraph_agent(user_id: str, session_id: str, tools: list):
 
 
 # ---------------------------------------------------------------------------
-# CopilotKit / AG-UI integration (opt-in via COPILOTKIT_ENABLED env var)
+# CopilotKit / AG-UI integration (opt-in via AGUI_ENABLED env var)
 # ---------------------------------------------------------------------------
 # When enabled, the agent additionally handles AG-UI protocol requests sent by
 # the CopilotKit runtime Lambda.  The original streaming path above is kept
 # unchanged for the default frontend.
 # ---------------------------------------------------------------------------
-COPILOTKIT_ENABLED = os.environ.get("COPILOTKIT_ENABLED", "").lower() == "true"
+AGUI_ENABLED = os.environ.get("AGUI_ENABLED", "").lower() == "true"
 
-if COPILOTKIT_ENABLED:
+if AGUI_ENABLED:
     import logging
     from ag_ui.core import RunAgentInput, RunErrorEvent
     from copilotkit import CopilotKitMiddleware, LangGraphAGUIAgent
@@ -216,12 +216,12 @@ async def agent_stream(payload, context: RequestContext):
     request lifecycle with token-level streaming. The user ID is extracted from the
     JWT token (via RequestContext).
 
-    When COPILOTKIT_ENABLED is set, AG-UI protocol requests (from the CopilotKit
+    When AGUI_ENABLED is set, AG-UI protocol requests (from the CopilotKit
     runtime Lambda) are detected and handled via LangGraphAGUIAgent instead.
     """
 
     # --- CopilotKit / AG-UI path ---
-    if COPILOTKIT_ENABLED and _is_agui_request(payload):
+    if AGUI_ENABLED and _is_agui_request(payload):
         input_data = RunAgentInput.model_validate(payload)
         authorization_header = (
             context.request_headers.get("Authorization")
